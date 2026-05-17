@@ -10,57 +10,43 @@ const PORT = process.env.PORT || 5000;
 app.use(cors());
 app.use(express.json());
 
-// ----------------------------------------------------
-// 1. DATABASE SCHEMA & MODEL (MongoDB) [cite: 107]
-// ----------------------------------------------------
+// 1. DATABASE SCHEMA & MODEL
 const CandidateSchema = new mongoose.Schema({
-    name: { type: String, required: true }, // [cite: 109]
-    email: { type: String, required: true, unique: true }, // [cite: 110]
-    skills: { type: [String], required: true }, // [cite: 111]
-    experience: { type: Number, required: true }, // [cite: 112]
-    projects: { type: String, default: "" }, // Frontend synchronization ke liye [cite: 12]
-    createdAt: { type: Date, default: Date.now } // [cite: 113]
+    name: { type: String, required: true },
+    email: { type: String, required: true, unique: true },
+    skills: { type: [String], required: true },
+    experience: { type: Number, required: true },
+    projects: { type: String, default: "" },
+    createdAt: { type: Date, default: Date.now }
 });
 
 const Candidate = mongoose.model('Candidate', CandidateSchema);
 
-// MongoDB Connection with Error Handling (Nodemon crash hone se rokega)
+// MongoDB Connection
 mongoose.connect(process.env.MONGO_URI)
     .then(() => console.log('✓ MongoDB Connected Successfully'))
     .catch((err) => {
         console.error('✗ MongoDB Connection Error:', err.message);
-        console.log('⚠️ Warning: Server is active but DB is not connected. Verify MONGO_URI in .env file.');
     });
 
+// API ENDPOINTS
 
-// ----------------------------------------------------
-// 2. REQUIRED API ENDPOINTS [cite: 33]
-// ----------------------------------------------------
-
-/**
- * Endpoint 1: Add Candidate (POST /api/candidates) [cite: 35, 36]
- */
+// 1. Add Candidate
 app.post('/api/candidates', async (req, res) => {
     try {
-        const { name, email, skills, experience, projects } = req.body; // [cite: 37, 38]
-        
-        // Essential Validation
+        const { name, email, skills, experience, projects } = req.body;
         if (!name || !email || !skills || !experience) {
-            return res.status(400).json({ message: "All required fields (name, email, skills, experience) must be filled." });
+            return res.status(400).json({ message: "All fields are required." });
         }
-
         const newCandidate = new Candidate({ name, email, skills, experience, projects });
         await newCandidate.save();
-        
         res.status(201).json({ message: "Candidate added successfully!", candidate: newCandidate });
     } catch (error) {
         res.status(500).json({ message: "Error adding candidate", error: error.message });
     }
 });
 
-/**
- * Endpoint 2: Get All Candidates (GET /api/candidates) [cite: 44, 45]
- */
+// 2. Get All Candidates
 app.get('/api/candidates', async (req, res) => {
     try {
         const candidates = await Candidate.find();
@@ -70,41 +56,34 @@ app.get('/api/candidates', async (req, res) => {
     }
 });
 
-/**
- * Endpoint 3: Shortlist Candidates - Basic Logic (POST /api/match) [cite: 47, 48]
- */
+// 3. Shortlist Candidates (Basic Matching Logic)
 app.post('/api/match', async (req, res) => {
     try {
-        const { requiredSkills, minExperience } = req.body; // [cite: 49, 50]
-
+        const { requiredSkills, minExperience } = req.body;
         if (!requiredSkills || !Array.isArray(requiredSkills)) {
-            return res.status(400).json({ message: "requiredSkills must be provided as an array." });
+            return res.status(400).json({ message: "requiredSkills must be an array." });
         }
 
         const candidates = await Candidate.find();
 
-        // Document functional specification ke anusaar mapping aur percentage calculation logic [cite: 20, 82, 83]
         const matchedCandidates = candidates.map(candidate => {
             const matchedSkills = candidate.skills.filter(skill =>
-                requiredSkills.some(reqSkill => reqSkill.toLowerCase() === skill.toLowerCase()) // [cite: 84, 86]
+                requiredSkills.some(reqSkill => reqSkill.toLowerCase() === skill.toLowerCase())
             );
-
-            // Match score as specified in requirements [cite: 88, 92]
             const score = requiredSkills.length > 0 ? (matchedSkills.length / requiredSkills.length) : 0;
 
             return {
                 _id: candidate._id,
-                name: candidate.name, // [cite: 102]
+                name: candidate.name,
                 email: candidate.email,
                 skills: candidate.skills,
                 experience: candidate.experience,
                 projects: candidate.projects,
-                matchedSkills: matchedSkills, // [cite: 104]
-                matchScore: Math.round(score * 100) // Percentage format [cite: 103]
+                matchedSkills: matchedSkills,
+                matchScore: Math.round(score * 100)
             };
         });
 
-        // Minimum Experience check aur high score se lower score ke anusaar sorting [cite: 21, 22, 93]
         const filteredAndSorted = matchedCandidates
             .filter(c => c.experience >= (minExperience || 0))
             .sort((a, b) => b.matchScore - a.matchScore);
@@ -115,74 +94,55 @@ app.post('/api/match', async (req, res) => {
     }
 });
 
-/**
- * Endpoint 4: AI-Based Candidate Suggestion (POST /api/ai/shortlist) [cite: 54, 55]
- */
+// 4. AI-Based Shortlisting (OpenRouter AI)
 app.post('/api/ai/shortlist', async (req, res) => {
     try {
         const { requiredSkills, minExperience } = req.body;
-
         const candidates = await Candidate.find();
+        
         if (candidates.length === 0) {
-            return res.status(400).json({ message: "No candidates found in the database to shortlist." });
+            return res.status(400).json({ message: "No candidates found." });
         }
 
         const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
         if (!OPENROUTER_API_KEY) {
-            return res.status(500).json({ message: "Configuration error: OpenRouter API Key is missing." });
+            return res.status(500).json({ message: "OpenRouter API Key is missing." });
         }
 
-        // Prompt formation as required by system documentation [cite: 58, 70, 71, 72]
         const jobDescriptionText = `Job requires: ${requiredSkills.join(', ')} (${minExperience}+ years experience)`;
         const candidatesText = candidates.map((c, index) => 
             `${index + 1}. ${c.name} - Skills: [${c.skills.join(', ')}] - Experience: ${c.experience} years`
         ).join('\n');
 
-        const promptContent = `${jobDescriptionText}\n\nCandidates:\n${candidatesText}\n\nRank candidates and explain why. Return output strictly as a JSON array of objects, where each object contains exactly these keys: "name", "matchScore", and "aiExplanation".`; // [cite: 80]
+        const promptContent = `${jobDescriptionText}\n\nCandidates:\n${candidatesText}\n\nRank candidates and explain why. Output format MUST be strictly a raw JSON array of objects without any markdown boxes or formatting. Example: [{"name": "Name", "matchScore": 90, "aiExplanation": "Reason"}]`;
 
-        // Node v18+ CommonJS dynamic injection for node-fetch package
         const { default: fetch } = await import('node-fetch');
-
-        // OpenRouter target connection [cite: 59]
-        const response = await fetch("https://openrouter.ai/api/v1/chat/completions", { // [cite: 59]
-            method: "POST", // [cite: 60]
+        const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+            method: "POST",
             headers: {
-                "Authorization": `Bearer ${OPENROUTER_API_KEY}`, // [cite: 63]
-                "Content-Type": "application/json" // [cite: 64]
+                "Authorization": `Bearer ${OPENROUTER_API_KEY}`,
+                "Content-Type": "application/json"
             },
-            body: JSON.stringify({ // [cite: 65]
-                model: "openai/gpt-5.2", // Exam specified model [cite: 66]
-                messages: [ // [cite: 67]
-                    { role: "user", content: promptContent } // [cite: 68, 69]
-                ]
+            body: JSON.stringify({
+                model: "google/gemini-2.5-flash:free",
+                messages: [{ role: "user", content: promptContent }]
             })
         });
 
         const aiData = await response.json();
-        if (!response.ok) {
-            throw new Error(aiData.error?.message || "Failed to communicate with OpenRouter service.");
+        let aiMessageContent = aiData.choices[0].message.content.trim();
+
+        if (aiMessageContent.startsWith("```")) {
+            aiMessageContent = aiMessageContent.replace(/```json|```/g, '').trim();
         }
 
-        // Parsing the textual dynamic structure into programmatic JSON
-        const aiMessageContent = aiData.choices[0].message.content;
-        const cleanJsonString = aiMessageContent.replace(/```json|```/g, '').trim();
-        const structuredAiRanking = JSON.parse(cleanJsonString);
-
-        // Returning the final array layout synchronized with the frontend
-        res.status(200).json({
-            message: "AI Shortlisting completed successfully",
-            ranking: structuredAiRanking
-        });
-
+        const structuredAiRanking = JSON.parse(aiMessageContent);
+        res.status(200).json({ message: "Success", ranking: structuredAiRanking });
     } catch (error) {
-        res.status(500).json({ message: "Error performing AI match", error: error.message });
+        res.status(500).json({ message: "AI Match Error", error: error.message });
     }
 });
 
-
-// ----------------------------------------------------
-// 3. SERVER BOOTSTRAP (Keeps process alive if DB fails)
-// ----------------------------------------------------
 app.listen(PORT, () => {
     console.log(`✓ Server running on http://localhost:${PORT}`);
 });
